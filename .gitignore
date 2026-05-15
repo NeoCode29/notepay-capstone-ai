@@ -1,0 +1,26 @@
+# Environment & credentials
+.env
+*.env
+
+# Virtual environments
+venv-yolo/
+venv-tf/
+
+# Dataset & model (upload ke Google Drive, link di README)
+data/
+models/
+
+# Logs
+logs/
+runs/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db
