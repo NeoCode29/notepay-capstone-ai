@@ -91,8 +91,8 @@ def download(api_key, workspace, project_slug, version, output_dir):
     project = rf.workspace(workspace).project(project_slug)
     dataset = project.version(version)
 
-    print("Mengunduh dataset (format: yolov8obb)...")
-    dataset.download("yolov8obb", location=output_dir, overwrite=True)
+    print("Mengunduh dataset (format: yolov8-obb)...")
+    dataset.download("yolov8-obb", location=output_dir, overwrite=True)
 
     # Verifikasi hasil download
     yaml_path = os.path.join(output_dir, "data.yaml")
