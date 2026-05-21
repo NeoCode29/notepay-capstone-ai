@@ -9,6 +9,7 @@ venv-tf/
 # Dataset & model (upload ke Google Drive, link di README)
 data/
 models/
+*.pt
 
 # Logs
 logs/
@@ -24,3 +25,10 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+CLAUDE.md
+database.md
+Project-Plan.txt
+Strategi-Pelatihan-OCR.txt
+Capstone-Guide.txt
+
+labeling-tool/

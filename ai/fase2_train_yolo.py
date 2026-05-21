@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from ai.config import (
     YOLO_BASE_MODEL, YOLO_DATA_YAML, YOLO_EPOCHS,
     YOLO_IMG_SIZE, YOLO_BATCH, YOLO_PATIENCE,
-    YOLO_MODEL_DIR, YOLO_BEST_PT,
+    YOLO_MODEL_DIR, YOLO_BEST_PT, YOLO_RESUME,
 )
 
 
@@ -33,7 +33,12 @@ def train():
 
     os.makedirs(YOLO_MODEL_DIR, exist_ok=True)
 
-    model = YOLO(YOLO_BASE_MODEL)
+    LAST_PT = "runs/obb_train/weights/last.pt"
+    if YOLO_RESUME and os.path.exists(LAST_PT):
+        print(f"[RESUME] Melanjutkan training dari {LAST_PT}")
+        model = YOLO(LAST_PT)
+    else:
+        model = YOLO(YOLO_BASE_MODEL)
 
     results = model.train(
         data=YOLO_DATA_YAML,
@@ -43,10 +48,18 @@ def train():
         patience=YOLO_PATIENCE,
         device=0,              # GPU 0; ganti ke "cpu" jika tidak ada GPU
         workers=4,
-        project="runs/obb",
-        name="train",
+        project="runs",
+        name="obb_train",
         exist_ok=True,
         verbose=True,
+        # Stabilitas numerik
+        optimizer="AdamW",
+        lr0=0.001,
+        lrf=0.01,
+        warmup_epochs=3,
+        cos_lr=True,
+        amp=False,             # AMP dimatikan — OBB angle loss rentan NaN di float16
+        angle=0.5,             # kurangi bobot angle loss dari default 1.0
     )
 
     # Salin best.pt ke folder models/ agar mudah dirujuk fase berikutnya

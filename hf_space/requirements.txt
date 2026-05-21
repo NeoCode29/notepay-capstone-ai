@@ -1,0 +1,8 @@
+ultralytics==8.4.50
+gradio==4.44.1
+huggingface_hub==0.25.2
+starlette==0.37.2
+fastapi==0.110.3
+pillow>=10.0.0
+numpy>=1.24.0
+opencv-python-headless>=4.8.0

@@ -23,7 +23,7 @@ MODELS_DIR       = os.path.join(BASE_DIR, "models")
 YOLO_MODEL_DIR   = os.path.join(MODELS_DIR, "yolo")
 CRNN_MODEL_DIR   = os.path.join(MODELS_DIR, "crnn")
 
-YOLO_BEST_PT     = os.path.join(YOLO_MODEL_DIR, "best.pt")
+YOLO_BEST_PT     = os.path.join(YOLO_MODEL_DIR, "best_yolo_v1.pt")
 CRNN_KERAS_PATH  = os.path.join(CRNN_MODEL_DIR, "crnn_model.keras")
 CRNN_INFER_PATH  = os.path.join(CRNN_MODEL_DIR, "inference_model.keras")
 
@@ -38,13 +38,14 @@ YOLO_EPOCHS      = 100
 YOLO_IMG_SIZE    = 640
 YOLO_BATCH       = 16
 YOLO_PATIENCE    = 20                  # early stopping
-YOLO_CLASSES     = ["nama_toko", "line_item", "tanggal_waktu", "total_belanja"]
+YOLO_CLASSES     = ["line_item", "nama_toko", "tanggal_waktu", "total_belanja"]
+YOLO_RESUME      = False               # set True untuk lanjut dari last.pt
 
 # ---------------------------------------------------------------------------
 # OCR Dataset — Fase 3
 # ---------------------------------------------------------------------------
 CROP_HEIGHT = 32    # tinggi gambar potongan setelah deskew (px)
-CROP_WIDTH  = 128   # lebar gambar potongan setelah deskew (px)
+CROP_WIDTH  = 512   # lebar gambar potongan — 512 agar line_item panjang tidak menciut
 
 # ---------------------------------------------------------------------------
 # CRNN + CTC — Fase 4
