@@ -94,3 +94,11 @@ backend/
 # Setup scripts lokal (spesifik mesin)
 # ---------------------------------------------------------------------------
 setup_venv_infer.sh
+
+# ---------------------------------------------------------------------------
+# Render deployment (tidak dipakai, pakai HF Spaces)
+# ---------------------------------------------------------------------------
+Dockerfile
+.dockerignore
+render.yaml
+requirements-render.txt
