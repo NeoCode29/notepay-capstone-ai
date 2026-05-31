@@ -1,8 +1,17 @@
+# YOLO
 ultralytics==8.4.50
+
+# TensorFlow + Keras 3 (model CRNN disimpan dengan Keras 3 — butuh TF 2.16+)
+# TF 2.15 bundle Keras 2, TF 2.16+ bundle Keras 3 sebagai default
+tensorflow-cpu==2.17.0
+
+# Gradio stack — versi ini stabil bersama (jangan upgrade sembarangan)
 gradio==4.44.1
 huggingface_hub==0.25.2
 starlette==0.37.2
 fastapi==0.110.3
+
+# Image processing
 pillow>=10.0.0
 numpy>=1.24.0
 opencv-python-headless>=4.8.0

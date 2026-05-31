@@ -36,7 +36,7 @@ from ultralytics import YOLO
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from ai.config import (
-    YOLO_BEST_PT, OCR_IMAGES_DIR, OCR_LABELS_CSV,
+    YOLO_BEST_PT, OCR_DATASET_DIR, OCR_LABELS_CSV,
     CROP_HEIGHT, CROP_WIDTH, YOLO_CLASSES,
 )
 
@@ -193,7 +193,7 @@ def _next_crop_idx():
         return 0
     indices = []
     for r in rows:
-        stem = Path(r["filename"]).stem  # "crop_00042"
+        stem = Path(r["filepath"]).stem  # "crop_00042"
         if stem.startswith("crop_"):
             try:
                 indices.append(int(stem.split("_")[1]))
@@ -206,7 +206,10 @@ def _append_to_csv(rows):
     """Tambahkan baris ke labels.csv (buat baru jika belum ada)."""
     file_exists = os.path.exists(OCR_LABELS_CSV)
     with open(OCR_LABELS_CSV, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["filename", "label", "class", "verified"])
+        writer = csv.DictWriter(
+            f, fieldnames=["filepath", "label", "class"],
+            quoting=csv.QUOTE_ALL,
+        )
         if not file_exists:
             writer.writeheader()
         writer.writerows(rows)
@@ -269,7 +272,6 @@ def main_from_annotations(dataset_dir, splits=None, class_filter=None):
     print("Memuat EasyOCR (model pertama kali akan diunduh)...")
     reader = easyocr.Reader(["id", "en"], gpu=True)
 
-    os.makedirs(OCR_IMAGES_DIR, exist_ok=True)
     crop_idx = _next_crop_idx()
     rows = []
     total = 0
@@ -296,24 +298,24 @@ def main_from_annotations(dataset_dir, splits=None, class_filter=None):
 
             print(f"  {img_path.name} → {len(pairs)} crop")
             for (crop, class_name), label in zip(pairs, labels):
+                class_dir = os.path.join(OCR_DATASET_DIR, class_name)
+                os.makedirs(class_dir, exist_ok=True)
                 filename = f"crop_{crop_idx:05d}.jpg"
-                cv2.imwrite(os.path.join(OCR_IMAGES_DIR, filename), crop)
+                cv2.imwrite(os.path.join(class_dir, filename), crop)
                 rows.append({
-                    "filename": filename,
+                    "filepath": f"{class_name}/{filename}",
                     "label":    label,
                     "class":    class_name,
-                    "verified": "0",
                 })
                 crop_idx += 1
                 total += 1
 
     _append_to_csv(rows)
 
-    print(f"\nSelesai. {total} crop baru disimpan ke {OCR_IMAGES_DIR}")
+    print(f"\nSelesai. {total} crop baru disimpan ke {OCR_DATASET_DIR}/<class>/")
     print(f"CSV label: {OCR_LABELS_CSV}")
     print("\nLangkah selanjutnya:")
-    print("  Buka labels.csv, periksa kolom 'label', ubah 'verified' ke '1' jika sudah benar.")
-    print("  Jalankan fase4_train_crnn.py setelah verifikasi selesai.")
+    print("  Buka labels.csv, periksa kolom 'label', lalu jalankan fase4_train_crnn.py.")
 
 
 def main(raw_dir, class_filter=None):
@@ -331,8 +333,6 @@ def main(raw_dir, class_filter=None):
     print(f"Memuat YOLOv8: {YOLO_BEST_PT}")
     yolo = YOLO(YOLO_BEST_PT)
 
-    os.makedirs(OCR_IMAGES_DIR, exist_ok=True)
-
     image_paths = [
         os.path.join(raw_dir, f)
         for f in os.listdir(raw_dir)
@@ -349,18 +349,23 @@ def main(raw_dir, class_filter=None):
         print(f"→ {len(pairs)} crop")
 
         for crop, label, class_name in pairs:
+            class_dir = os.path.join(OCR_DATASET_DIR, class_name)
+            os.makedirs(class_dir, exist_ok=True)
             filename = f"crop_{crop_idx:05d}.jpg"
-            cv2.imwrite(os.path.join(OCR_IMAGES_DIR, filename), crop)
-            rows.append({"filename": filename, "label": label, "class": class_name, "verified": "0"})
+            cv2.imwrite(os.path.join(class_dir, filename), crop)
+            rows.append({
+                "filepath": f"{class_name}/{filename}",
+                "label":    label,
+                "class":    class_name,
+            })
             crop_idx += 1
 
     _append_to_csv(rows)
 
-    print(f"\nSelesai. {len(rows)} crop baru disimpan.")
+    print(f"\nSelesai. {len(rows)} crop baru disimpan ke {OCR_DATASET_DIR}/<class>/")
     print(f"CSV label: {OCR_LABELS_CSV}")
     print("\nLangkah selanjutnya:")
-    print("  Buka labels.csv, periksa kolom 'label', ubah 'verified' ke '1' jika sudah benar.")
-    print("  Jalankan fase4_train_crnn.py setelah verifikasi selesai.")
+    print("  Buka labels.csv, periksa kolom 'label', lalu jalankan fase4_train_crnn.py.")
 
 
 if __name__ == "__main__":

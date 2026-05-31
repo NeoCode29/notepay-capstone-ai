@@ -1,0 +1,28 @@
+services:
+  # ── Flask AI API (OCR + Klasifikasi) ───────────────────
+  # Backend Express.js → Vercel (lihat backend/vercel.json)
+  # Frontend Next.js   → Vercel (lihat frontend/vercel.json)
+  - type: web
+    name: notepay-ai-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+
+    # ⚠️ Model AI butuh minimal 2GB RAM
+    # Free (512MB) → OOM. Gunakan Standard ($25/bln, 2GB).
+    plan: standard
+
+    healthCheckPath: /health
+    numInstances: 1
+
+    envVars:
+      - key: HF_REPO_ID
+        value: NeoCode77/notepay-models
+      - key: NOTEPAY_DEVICE
+        value: cpu
+      - key: TF_CPP_MIN_LOG_LEVEL
+        value: "2"
+      - key: TF_ENABLE_ONEDNN_OPTS
+        value: "0"
+      # HF Token (opsional, jika repo private):
+      # - key: HUGGING_FACE_HUB_TOKEN
+      #   sync: false

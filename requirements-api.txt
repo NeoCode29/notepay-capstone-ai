@@ -1,0 +1,8 @@
+# Flask API server dependencies — install di venv-tf (WSL2)
+# pip install -r requirements-api.txt
+
+flask>=3.0.0
+flask-cors>=4.0.0
+
+# Production WSGI server (opsional, untuk deployment)
+gunicorn>=21.0.0

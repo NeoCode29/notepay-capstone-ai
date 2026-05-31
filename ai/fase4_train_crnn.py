@@ -17,6 +17,8 @@ Output:
     logs/crnn/                         ← TensorBoard logs
 """
 
+import argparse
+import csv
 import os
 import sys
 
@@ -27,7 +29,7 @@ import keras
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from ai.config import (
-    OCR_IMAGES_DIR, OCR_LABELS_CSV,
+    OCR_DATASET_DIR, OCR_LABELS_CSV,
     CROP_HEIGHT, CROP_WIDTH,
     NUM_CLASSES, CHAR_TO_IDX, IDX_TO_CHAR,
     MAX_LABEL_LEN, CRNN_EPOCHS, CRNN_BATCH_SIZE,
@@ -40,6 +42,7 @@ from ai.config import (
 # Custom Layer — CTC Loss (memenuhi syarat capstone)
 # ---------------------------------------------------------------------------
 
+@keras.saving.register_keras_serializable(package="notepay")
 class CTCLayer(keras.layers.Layer):
     """
     Layer khusus yang menghitung CTC loss dan menambahkannya ke model loss.
@@ -47,19 +50,30 @@ class CTCLayer(keras.layers.Layer):
     tanpa harus memotong gambar per karakter.
     """
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.loss_fn = keras.backend.ctc_batch_cost
-
     def call(self, y_true, y_pred):
-        batch_len   = tf.cast(tf.shape(y_pred)[0], dtype="int64")
-        input_len   = tf.cast(tf.shape(y_pred)[1], dtype="int64")
-        label_len   = tf.cast(tf.shape(y_true)[1], dtype="int64")
+        batch_len = tf.shape(y_pred)[0]
+        input_len = tf.shape(y_pred)[1]
 
-        input_length = input_len * tf.ones(shape=(batch_len, 1), dtype="int64")
-        label_length = label_len * tf.ones(shape=(batch_len, 1), dtype="int64")
+        input_length = tf.cast(tf.fill([batch_len], input_len), tf.int32)
 
-        loss = self.loss_fn(y_true, y_pred, input_length, label_length)
+        # Hitung panjang label ASLI (non-padding) per sampel.
+        # Padding menggunakan 0 (= blank token CTC), jadi jangan ikutkan ke CTC loss.
+        label_length = tf.cast(
+            tf.reduce_sum(tf.cast(tf.not_equal(y_true, 0), tf.int32), axis=1),
+            tf.int32,
+        )
+
+        # tf.nn.ctc_loss butuh log-probabilities, bukan softmax langsung
+        log_probs = tf.math.log(tf.clip_by_value(tf.cast(y_pred, tf.float32), 1e-7, 1.0))
+
+        loss = tf.nn.ctc_loss(
+            labels=tf.cast(y_true, tf.int32),
+            logits=log_probs,
+            label_length=label_length,
+            logit_length=input_length,
+            logits_time_major=False,
+            blank_index=0,
+        )
         self.add_loss(tf.reduce_mean(loss))
         return y_pred
 
@@ -87,11 +101,11 @@ def build_crnn(img_h=CROP_HEIGHT, img_w=CROP_WIDTH, num_classes=NUM_CLASSES):
     # ---- CNN ----
     # Setiap blok: Conv → BN → ReLU → MaxPool
     # Output akhir: (batch, 1, img_w//4, 512) → setelah reshape: (batch, img_w//4, 512)
-    x = _cnn_block(image_input, filters=32,  pool=(2, 2))   # (16, 64, 32)
-    x = _cnn_block(x,           filters=64,  pool=(2, 2))   # (8, 32, 64)
-    x = _cnn_block(x,           filters=128, pool=(2, 1))   # (4, 32, 128)
-    x = _cnn_block(x,           filters=256, pool=(2, 1))   # (2, 32, 256)
-    x = _cnn_block(x,           filters=512, pool=(2, 1))   # (1, 32, 512)
+    x = _cnn_block(image_input, filters=32,  pool=(2, 2), dropout=0.0)
+    x = _cnn_block(x,           filters=64,  pool=(2, 2), dropout=0.1)
+    x = _cnn_block(x,           filters=128, pool=(2, 1), dropout=0.1)
+    x = _cnn_block(x,           filters=256, pool=(2, 1), dropout=0.2)
+    x = _cnn_block(x,           filters=512, pool=(2, 1), dropout=0.2)
 
     # Squeeze dimensi tinggi agar jadi sequence (batch, 32, 512)
     time_steps = img_w // 4   # = 32
@@ -108,8 +122,12 @@ def build_crnn(img_h=CROP_HEIGHT, img_w=CROP_WIDTH, num_classes=NUM_CLASSES):
     )(x)
 
     # ---- Output ----
-    logits = keras.layers.Dense(num_classes, activation="softmax", name="logits")(x)
-    # shape: (batch, 32, num_classes)
+    # dtype='float32' memaksa Dense output tetap float32 meski global policy mixed_float16.
+    # ctc_batch_cost membutuhkan float32 agar numerically stable.
+    logits = keras.layers.Dense(
+        num_classes, activation="softmax", name="logits", dtype="float32"
+    )(x)
+    # shape: (batch, 128, num_classes)
 
     # ---- Inference model (tanpa CTC layer) ----
     inference_model = keras.Model(
@@ -125,11 +143,13 @@ def build_crnn(img_h=CROP_HEIGHT, img_w=CROP_WIDTH, num_classes=NUM_CLASSES):
     return train_model, inference_model
 
 
-def _cnn_block(x, filters, pool):
+def _cnn_block(x, filters, pool, dropout=0.1):
     x = keras.layers.Conv2D(filters, 3, padding="same")(x)
     x = keras.layers.BatchNormalization()(x)
     x = keras.layers.Activation("relu")(x)
     x = keras.layers.MaxPooling2D(pool_size=pool)(x)
+    if dropout > 0:
+        x = keras.layers.Dropout(dropout)(x)
     return x
 
 
@@ -150,11 +170,13 @@ class CTCDecodeCallback(keras.callbacks.Callback):
         self.n_samples      = n_samples
 
     def on_epoch_end(self, epoch, logs=None):
-        for images, labels in self.val_dataset.take(1):
-            preds = self.inference_model(images[:self.n_samples], training=False)
+        for batch in self.val_dataset.take(1):
+            images = batch["image"][:self.n_samples]
+            labels = batch["label"][:self.n_samples]
+            preds = self.inference_model(images, training=False)
             decoded = _ctc_greedy_decode(preds.numpy())
             print(f"\n  [Epoch {epoch+1}] Contoh prediksi:")
-            for i, (pred_text, true_label) in enumerate(zip(decoded, labels[:self.n_samples])):
+            for pred_text, true_label in zip(decoded, labels):
                 true_text = _decode_label(true_label.numpy())
                 match = "✓" if pred_text == true_text else "✗"
                 print(f"    [{match}] GT: '{true_text}'  →  Pred: '{pred_text}'")
@@ -186,24 +208,52 @@ def _decode_label(label_indices):
 # Data pipeline — tf.data
 # ---------------------------------------------------------------------------
 
-def load_dataset():
-    if not os.path.exists(OCR_LABELS_CSV):
-        raise FileNotFoundError(
-            f"CSV label tidak ditemukan: {OCR_LABELS_CSV}\n"
-            "Jalankan fase3_prepare_dataset.py terlebih dahulu."
-        )
-
-    df = pd.read_csv(OCR_LABELS_CSV, encoding="utf-8")
-
-    # Hanya pakai data yang sudah diverifikasi (verified == 1)
-    # Saat pertama kali training, boleh pakai semua dengan verified != -1
-    df_use = df[df["verified"] != -1].copy()
-    print(f"Total sampel: {len(df_use)} (dari {len(df)} baris)")
-
-    paths  = (OCR_IMAGES_DIR + os.sep + df_use["filename"]).tolist()
-    labels = df_use["label"].fillna("").tolist()
-
+def _load_split_from_csv(csv_path, base_dir):
+    """Baca labels.csv dan kembalikan (paths, labels)."""
+    df = pd.read_csv(
+        csv_path,
+        encoding="utf-8",
+        quotechar='"',
+        quoting=csv.QUOTE_ALL,
+        on_bad_lines="warn",
+    )
+    paths  = [os.path.join(base_dir, fp) for fp in df["filepath"].tolist()]
+    labels = df["label"].fillna("").tolist()
     return paths, labels
+
+
+def load_dataset(dataset_dir=None):
+    """
+    Auto-detect struktur dataset:
+      - Split    : dataset_dir/train/labels.csv + dataset_dir/val/labels.csv
+      - Flat     : dataset_dir/labels.csv (split otomatis dengan VAL_SPLIT)
+    """
+    base = dataset_dir or OCR_DATASET_DIR
+
+    train_csv = os.path.join(base, "train", "labels.csv")
+    val_csv   = os.path.join(base, "val",   "labels.csv")
+
+    if os.path.exists(train_csv) and os.path.exists(val_csv):
+        # Struktur split (hasil augment_dataset.py)
+        train_paths, train_labels = _load_split_from_csv(
+            train_csv, os.path.join(base, "train"))
+        val_paths, val_labels = _load_split_from_csv(
+            val_csv, os.path.join(base, "val"))
+        print(f"Dataset (split) : train={len(train_paths)}  val={len(val_paths)}")
+        return train_paths, train_labels, val_paths, val_labels
+
+    # Struktur flat — split manual
+    flat_csv = os.path.join(base, "labels.csv")
+    if not os.path.exists(flat_csv):
+        raise FileNotFoundError(
+            f"labels.csv tidak ditemukan di: {base}\n"
+            "Jalankan fase3_prepare_dataset.py atau augment_dataset.py terlebih dahulu."
+        )
+    paths, labels = _load_split_from_csv(flat_csv, base)
+    split = int(len(paths) * (1 - VAL_SPLIT))
+    print(f"Dataset (flat)  : total={len(paths)}  "
+          f"train={split}  val={len(paths)-split}")
+    return paths[:split], labels[:split], paths[split:], labels[split:]
 
 
 def encode_label(text):
@@ -250,7 +300,14 @@ def make_tf_dataset(paths, labels, batch_size, augment=False, shuffle=False):
     if shuffle:
         ds = ds.shuffle(buffer_size=min(len(paths), 2000))
 
-    ds = ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+    ds = ds.batch(batch_size)
+
+    # Keras 3 membaca (x, y) dari dataset — padahal model butuh KEDUANYA sebagai input.
+    # Yield dict agar Keras 3 memetakan key ke nama InputLayer secara eksplisit.
+    ds = ds.map(lambda img, lbl: {"image": img, "label": lbl},
+                num_parallel_calls=tf.data.AUTOTUNE)
+
+    ds = ds.prefetch(tf.data.AUTOTUNE)
     return ds
 
 
@@ -258,7 +315,32 @@ def make_tf_dataset(paths, labels, batch_size, augment=False, shuffle=False):
 # Training
 # ---------------------------------------------------------------------------
 
-def train():
+def _configure_gpu(memory_limit_mb=3800):
+    """Konfigurasi GPU: tumbuh dinamis hingga memory_limit_mb (default 3.8GB dari 4GB)."""
+    gpus = tf.config.list_physical_devices("GPU")
+    if gpus:
+        try:
+            tf.config.set_logical_device_configuration(
+                gpus[0],
+                [tf.config.LogicalDeviceConfiguration(memory_limit=memory_limit_mb)]
+            )
+            print(f"GPU memory limit: {memory_limit_mb} MB")
+        except RuntimeError as e:
+            print(f"GPU config warning: {e}")
+
+    # Disable layout optimizer — mencegah crash cuDNN 1002 (NHWC→NCHW conversion gagal
+    # pada TF 2.21 + cuDNN 9.2 di WSL2 dengan GPU laptop tertentu).
+    tf.config.optimizer.set_experimental_options({"layout_optimizer": False})
+
+
+def train(dataset_dir=None):
+    _configure_gpu(3800)
+
+    # Mixed precision — float16 untuk forward pass, float32 untuk optimizer.
+    # Hemat ~50% VRAM sehingga model 32×512 + BiLSTM muat di 4GB VRAM.
+    keras.mixed_precision.set_global_policy("mixed_float16")
+    print("Mixed precision:", keras.mixed_precision.global_policy().name)
+
     print("TF version:", tf.__version__)
     print("GPU:", tf.config.list_physical_devices("GPU"))
 
@@ -266,21 +348,23 @@ def train():
     os.makedirs(LOGS_DIR, exist_ok=True)
 
     # Data
-    paths, labels = load_dataset()
-    split = int(len(paths) * (1 - VAL_SPLIT))
-    train_ds = make_tf_dataset(paths[:split], labels[:split],
+    train_paths, train_labels, val_paths, val_labels = load_dataset(dataset_dir)
+    train_ds = make_tf_dataset(train_paths, train_labels,
                                CRNN_BATCH_SIZE, augment=True, shuffle=True)
-    val_ds   = make_tf_dataset(paths[split:], labels[split:],
+    val_ds   = make_tf_dataset(val_paths, val_labels,
                                CRNN_BATCH_SIZE, augment=False, shuffle=False)
 
     # Model
     train_model, inference_model = build_crnn()
     train_model.summary()
 
-    train_model.compile(optimizer=keras.optimizers.Adam(CRNN_LR))
+    train_model.compile(
+        optimizer=keras.optimizers.Adam(CRNN_LR, clipnorm=1.0)
+    )
 
     # Callbacks
     callbacks = [
+        keras.callbacks.TerminateOnNaN(),
         CTCDecodeCallback(val_ds, inference_model, n_samples=4),
         keras.callbacks.ModelCheckpoint(
             filepath=os.path.join(CRNN_MODEL_DIR, "ckpt_best.keras"),
@@ -313,14 +397,14 @@ def train():
 
     # Evaluasi akhir pada val set
     print("\nEvaluasi CER pada validation set...")
-    evaluate_cer(inference_model, val_ds, paths[split:], labels[split:])
+    evaluate_cer(inference_model, val_ds, val_paths, val_labels)
 
 
 def evaluate_cer(model, val_ds, paths, true_labels):
     """Hitung Character Error Rate (CER) pada validation set."""
     all_preds = []
-    for images, _ in val_ds:
-        preds = model(images, training=False).numpy()
+    for batch in val_ds:
+        preds = model(batch["image"], training=False).numpy()
         all_preds.extend(_ctc_greedy_decode(preds))
 
     total_chars = 0
@@ -348,4 +432,13 @@ def _edit_distance(s1, s2):
 
 
 if __name__ == "__main__":
-    train()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--dataset", default=None,
+        help="Path folder dataset. "
+             "Jika ada train/labels.csv dan val/labels.csv maka pakai struktur split. "
+             "Jika tidak ada, pakai labels.csv flat dengan VAL_SPLIT otomatis. "
+             f"Default: {OCR_DATASET_DIR}"
+    )
+    args = parser.parse_args()
+    train(dataset_dir=args.dataset)
